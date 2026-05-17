@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Smart Routing System</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    
+    <style>
+        :root {
+            --bg: #0f172a; --card: #1e293b; --text: #f8fafc; 
+            --accent: #38bdf8; --danger: #f43f5e; --success: #4ade80;
+        }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; }
+        #map { flex: 2; background: #000; }
+        #sidebar { flex: 1; background: var(--card); padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; border-left: 1px solid #334155; }
+        h2 { margin-top: 0; font-size: 1.5rem; border-bottom: 2px solid var(--accent); padding-bottom: 10px; }
+        .control-group { display: flex; flex-direction: column; gap: 6px; }
+        label { font-size: 0.9rem; color: #94a3b8; }
+        input, select { background: #0f172a; border: 1px solid #475569; color: white; padding: 12px; border-radius: 6px; outline: none; font-size: 1rem; }
+        input:focus { border-color: var(--accent); }
+        button { background: var(--accent); color: #000; font-weight: bold; padding: 14px; border: none; border-radius: 6px; cursor: pointer; transition: 0.2s; font-size: 1.1rem; }
+        button:hover { opacity: 0.8; transform: translateY(-1px); }
+        button:disabled { background: #475569; cursor: not-allowed; transform: none; }
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .stat-card { background: var(--bg); padding: 12px; border-radius: 8px; text-align: center; border: 1px solid #334155; }
+        .stat-val { font-size: 1.2rem; font-weight: bold; color: var(--accent); }
+        .stat-label { font-size: 0.8rem; color: #94a3b8; }
+        .resolved { display: none; background: var(--bg); border: 1px solid #334155; border-radius: 8px; padding: 12px; font-size: 0.85rem; color: #cbd5e1; line-height: 1.4; }
+        .resolved strong { color: var(--accent); }
+        #elevation-chart { width: 100%; height: 250px; }
+        .loader { border: 4px solid #334155; border-top: 4px solid var(--accent); border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: inline-block; vertical-align: middle; margin-left: 10px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+    
+    <div id="sidebar">
+        <h2>🛰️ GraphHopper AI Route</h2>
+        
+        <div class="control-group">
+            <label>Starting Location</label>
+            <input type="text" id="start" placeholder="e.g. Times Square, New York" value="Times Square, New York">
+        </div>
+        
+        <div class="control-group">
+            <label>Destination</label>
+            <input type="text" id="end" placeholder="e.g. Brooklyn Bridge, New York" value="Brooklyn Bridge, New York">
+        </div>
+
+        <div class="control-group">
+            <label>Vehicle Profile</label>
+            <select id="vehicle">
+                <option value="car">Standard Car</option>
+                <option value="bike">Bike</option>
+                <option value="foot">Walking</option>
+            </select>
+        </div>
+
+        <button id="routeBtn" onclick="fetchRoute()">Generate Smart Route</button>
+
+        <div class="resolved" id="resolvedContainer">
+            <div><strong>Start:</strong> <span id="resolvedStart">--</span></div>
+            <div><strong>End:</strong> <span id="resolvedEnd">--</span></div>
+            <div><strong>GraphHopper profile:</strong> <span id="resolvedProfile">--</span></div>
+        </div>
+
+        <div class="stat-grid" id="statsContainer" style="display:none;">
+            <div class="stat-card">
+                <div class="stat-val" id="statDist">--</div>
+                <div class="stat-label">Distance (m)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="statTime">--</div>
+                <div class="stat-label">Travel Time</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="statRisk">--</div>
+                <div class="stat-label">Risk Score</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="statSlope">--</div>
+                <div class="stat-label">Max Incline</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="statVehicle">--</div>
+                <div class="stat-label">Suitability</div>
+            </div>
+        </div>
+
+        <div id="elevation-chart"></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const map = L.map('map').setView([40.7580, -73.9855], 13);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap &copy; CARTO',
+            maxZoom: 19
+        }).addTo(map);
+
+        let routeLayer = L.layerGroup().addTo(map);
+
+        async function fetchRoute() {
+            const btn = document.getElementById('routeBtn');
+            btn.disabled = true;
+            btn.innerHTML = 'Routing via GraphHopper <div class="loader"></div>';
+            routeLayer.clearLayers();
+
+            const payload = {
+                start_loc: document.getElementById('start').value,
+                end_loc: document.getElementById('end').value,
+                vehicle_type: document.getElementById('vehicle').value
+            };
+
+            try {
+                const res = await fetch('/api/route', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await res.json();
+                if (data.detail) throw new Error(data.detail);
+
+                renderRoute(data.geojson);
+                renderElevation(data.elevation_profile);
+                renderStats(data.analytics);
+
+                map.fitBounds(L.geoJSON(data.geojson).getBounds(), { padding: [50, 50] });
+            } catch (e) {
+                alert("Error: " + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Generate Smart Route';
+            }
+        }
+
+        function renderRoute(geojson) {
+            L.geoJSON(geojson, { style: { color: '#38bdf8', weight: 8, opacity: 0.2 } }).addTo(routeLayer);
+            L.geoJSON(geojson, { style: { color: '#0ea5e9', weight: 5, lineCap: 'round', lineJoin: 'round' } }).addTo(routeLayer);
+
+            const coords = geojson.geometry.coordinates;
+            if (coords.length > 0) {
+                const start = coords[0];
+                const end = coords[coords.length - 1];
+                L.marker([start[1], start[0]]).addTo(routeLayer).bindPopup('Start');
+                L.marker([end[1], end[0]]).addTo(routeLayer).bindPopup('End');
+            }
+        }
+
+        function renderElevation(profile) {
+            const trace = {
+                x: profile.distances, y: profile.elevations,
+                type: 'scatter', mode: 'lines', fill: 'tozeroy',
+                line: { color: '#38bdf8', width: 2 }
+            };
+            const layout = {
+                paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+                margin: { t: 20, r: 0, b: 40, l: 40 }, font: { color: '#94a3b8' },
+                xaxis: { title: 'Distance (m)', gridcolor: '#334155' },
+                yaxis: { title: 'Real Elevation (m)', gridcolor: '#334155' }
+            };
+            Plotly.newPlot('elevation-chart', [trace], layout, { responsive: true, displayModeBar: false });
+        }
+
+        function renderStats(analytics) {
+            document.getElementById('statsContainer').style.display = 'grid';
+            document.getElementById('statDist').innerText = Math.round(analytics.total_distance_m);
+            document.getElementById('statTime').innerText = analytics.travel_time_text;
+            
+            const riskEl = document.getElementById('statRisk');
+            riskEl.innerText = (analytics.overall_risk_score * 100).toFixed(1) + '%';
+            riskEl.style.color = analytics.overall_risk_score > 0.4 ? '#f43f5e' : '#4ade80';
+
+            document.getElementById('statSlope').innerText = analytics.terrain_analysis.max_incline + '°';
+            document.getElementById('statVehicle').innerText = analytics.vehicle_suitability;
+
+            document.getElementById('resolvedContainer').style.display = 'block';
+            document.getElementById('resolvedStart').innerText = analytics.start.name;
+            document.getElementById('resolvedEnd').innerText = analytics.end.name;
+            document.getElementById('resolvedProfile').innerText = analytics.routing_profile;
+        }
+    </script>
+</body>
+</html>
