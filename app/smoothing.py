@@ -1,4 +1,3 @@
-import numpy as np
 import math
 
 def haversine(lon1, lat1, lon2, lat2):
@@ -32,12 +31,12 @@ def chaikin_smooth_3d(coords, iterations=2):
     for _ in range(iterations):
         new_smoothed = [smoothed[0]]
         for i in range(len(smoothed) - 1):
-            p0 = np.array(smoothed[i])
-            p1 = np.array(smoothed[i+1])
-            q = 0.75 * p0 + 0.25 * p1
-            r = 0.25 * p0 + 0.75 * p1
-            new_smoothed.append(tuple(q))
-            new_smoothed.append(tuple(r))
+            p0 = smoothed[i]
+            p1 = smoothed[i+1]
+            q = tuple(0.75 * p0[axis] + 0.25 * p1[axis] for axis in range(3))
+            r = tuple(0.25 * p0[axis] + 0.75 * p1[axis] for axis in range(3))
+            new_smoothed.append(q)
+            new_smoothed.append(r)
         new_smoothed.append(smoothed[-1])
         smoothed = new_smoothed
     return smoothed
